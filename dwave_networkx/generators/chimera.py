@@ -32,9 +32,46 @@ __all__ = ['chimera_graph',
            'chimera_to_linear',
            'linear_to_chimera',
            'chimera_sublattice_mappings',
+           'chimera_torus',
            ]
 
+def _add_compatible_edges(G, edge_list):
+    if edge_list is not None:
+        # These operations seem like they may allow for optimization,
+        # but in typical use case, optimization is not a priority.
+       
+        if type(G) is nx.classes.graph.Graph:
+            #Undirected (special care of tuples):
+            edges = {tuple(sorted(edge)) for edge in edge_list}
+            edges_available = {tuple(sorted(edge)) for edge in G.edges()}
+        else:
+            # A directed graph? This case is fishy
+            edges = {tuple(edge) for edge in edge_list}
+            edges_available = G.edges()
+            
+        G.remove_edges_from(edges_available - edges)
+        if len(edges) != G.number_of_edges():
+            msg = ("The edge_list is incompatible with the edges of the graph."
+                   "Expected " + str(len(edges))
+                   + " edges, but yielded " + str(G.number_of_edges()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
 
+
+def _add_compatible_nodes(G, node_list):
+    if node_list is not None:
+        nodes = set(node_list)
+        #print(list(node_list))
+        #print(nodes)
+        #print(G.nodes())
+        G.remove_nodes_from(set(G) - nodes)
+        # An error could be raised here if node_list
+        # is incompatible with the graph.
+        if len(nodes) != G.number_of_nodes():
+            msg = ("The node_list is incompatible with the nodes of the graph."
+                   "Expected " + str(len(nodes))
+                   + " Yielded " + str(G.number_of_nodes()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
+        
 def chimera_graph(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=False):
     """Creates a Chimera lattice of size (m, n, t).
 
@@ -49,14 +86,17 @@ def chimera_graph(m, n=None, t=None, create_using=None, node_list=None, edge_lis
     create_using : Graph (optional, default None)
         If provided, this graph is cleared of nodes and edges and filled
         with the new graph. Usually used to set the type of the graph.
+
     node_list : iterable (optional, default None)
-        Iterable of nodes in the graph. If None, calculated
-        from (m, n, t). Note that this list is used to remove nodes,
-        so any nodes specified not in ``range(m * n * 2 * t)`` are not added.
+        Iterable of nodes in the graph. If None, nodes are
+        generated as described below. If values incompatible with
+        the integer (or coordinates, as appropriate) labeling are proposed 
+        a warning is issued and the values are ignored.
     edge_list : iterable (optional, default None)
         Iterable of edges in the graph. If None, edges are
-        generated as described below. The nodes in each edge must be
-        integer-labeled in ``range(m * n * t * 2)``.
+        generated as described below. If values incompatible with 
+        the integer (or coordinates, as appropriate) labeling are proposed 
+        a warning is issued and the values are ignored.
     data : bool (optional, default True)
         If True, each node has a
         `chimera_index attribute`. The attribute is a 4-tuple Chimera index
@@ -139,54 +179,50 @@ def chimera_graph(m, n=None, t=None, create_using=None, node_list=None, edge_lis
 
     max_size = m * n * 2 * t  # max number of nodes G can have
 
-    if edge_list is None:
-        if coordinates:
-            # tile edges
-            G.add_edges_from(((i, j, 0, k0), (i, j, 1, k1))
-                             for i in range(m)
-                             for j in range(n)
-                             for k0 in range(t)
-                             for k1 in range(t))
+    if coordinates:
+        # tile edges
+        G.add_edges_from(((i, j, 0, k0), (i, j, 1, k1))
+                         for i in range(m)
+                         for j in range(n)
+                         for k0 in range(t)
+                         for k1 in range(t))
 
-            # horizontal edges
-            G.add_edges_from(((i, j, 1, k), (i, j+1, 1, k))
-                             for i in range(m)
-                             for j in range(n-1)
-                             for k in range(t))
-            # vertical edges
-            G.add_edges_from(((i, j, 0, k), (i+1, j, 0, k))
-                             for i in range(m-1)
-                             for j in range(n)
-                             for k in range(t))
-        else:
-            hoff = 2 * t
-            voff = n * hoff
-            mi = m * voff
-            ni = n * hoff
-
-            # tile edges
-            G.add_edges_from((k0, k1)
-                             for i in range(0, ni, hoff)
-                             for j in range(i, mi, voff)
-                             for k0 in range(j, j + t)
-                             for k1 in range(j + t, j + 2 * t))
-            # horizontal edges
-            G.add_edges_from((k, k + hoff)
-                             for i in range(t, 2 * t)
-                             for j in range(i, ni - hoff, hoff)
-                             for k in range(j, mi, voff))
-            # vertical edges
-            G.add_edges_from((k, k + voff)
-                             for i in range(t)
-                             for j in range(i, ni, hoff)
-                             for k in range(j, mi - voff, voff))
+        # horizontal edges
+        G.add_edges_from(((i, j, 1, k), (i, j+1, 1, k))
+                         for i in range(m)
+                         for j in range(n-1)
+                         for k in range(t))
+        # vertical edges
+        G.add_edges_from(((i, j, 0, k), (i+1, j, 0, k))
+                         for i in range(m-1)
+                         for j in range(n)
+                         for k in range(t))
     else:
-        G.add_edges_from(edge_list)
+        hoff = 2 * t
+        voff = n * hoff
+        mi = m * voff
+        ni = n * hoff
+        
+        # tile edges
+        G.add_edges_from((k0, k1)
+                         for i in range(0, ni, hoff)
+                         for j in range(i, mi, voff)
+                         for k0 in range(j, j + t)
+                         for k1 in range(j + t, j + 2 * t))
+        # horizontal edges
+        G.add_edges_from((k, k + hoff)
+                         for i in range(t, 2 * t)
+                         for j in range(i, ni - hoff, hoff)
+                         for k in range(j, mi, voff))
+        # vertical edges
+        G.add_edges_from((k, k + voff)
+                         for i in range(t)
+                         for j in range(i, ni, hoff)
+                         for k in range(j, mi - voff, voff))
+    
+    _add_compatible_edges(G,edge_list)
+    _add_compatible_nodes(G,node_list)
 
-    if node_list is not None:
-        nodes = set(node_list)
-        G.remove_nodes_from(set(G) - nodes)
-        G.add_nodes_from(nodes)  # for singleton nodes
 
     if data:
         if coordinates:
@@ -696,3 +732,89 @@ def chimera_sublattice_mappings(source, target, offset_list=None):
     for offset in offset_list:
         yield _chimera_sublattice_mapping(source_to_chimera, chimera_to_target, offset)
 
+def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=False):
+    """Creates a defect-free Chimera lattice of size (m, n, t) subject to periodic boundary conditions
+
+
+    Parameters
+    ----------
+    m : int
+        Number of rows in the Chimera torus lattice.
+        If m<3 no periodicity is applied in the row direction (a loop of length
+        less than 3 is ill-defined). 
+    n : int (optional, default m)
+        Number of columns in the Chimera torus lattice.
+        If n<3 no periodicity is applied in the row direction (a loop of length
+        less than 3 is ill-defined)
+        m must be atleast 2, a loop of fewer than 3 tiles is not well defined.
+    t : int (optional, default 4)
+        Size of the shore within each Chimera tile.
+    create_using : Graph (optional, default None)
+        If provided, this graph is cleared of nodes and edges and filled
+        with the new graph. Usually used to set the type of the graph.
+    node_list : iterable (optional, default None)
+        Iterable of nodes in the graph. If None, nodes are
+        generated as described below. If values incompatible with
+        the integer (or coordinates, as appropriate) labeling are proposed 
+        a warning is issued and the values are ignored.
+    edge_list : iterable (optional, default None)
+        Iterable of edges in the graph. If None, edges are
+        generated as described below. If values incompatible with 
+        the integer (or coordinates, as appropriate) labeling are proposed 
+        a warning is issued and the values are ignored.
+    data : bool (optional, default True)
+        If True, each node has a
+        `chimera_index attribute`. The attribute is a 4-tuple Chimera index
+        as defined below.
+    coordinates : bool (optional, default False)
+        If True, node labels are 4-tuples, equivalent to the chimera_index
+        attribute as below.  In this case, the `data` parameter controls the
+        existence of a `linear_index attribute`, which is an int.
+
+    Returns
+    -------
+    G : NetworkX Graph
+        An (m, n, t) Chimera torus. Nodes are labeled by integers.
+
+    A chimera torus is a generalization of the standard chimera graph
+    whereby bulk connectivity properties are maintained, but the boundary
+    condition is modified to enforce an additional translational 
+    invariance symmetry. The graph has :code:`V=8*m*n` nodes, and :code:`min(6,4+m)V//2 + 
+    min(6,4+n)V/2` edges. With the standard :math:`K_{t,t}` Chimera tile definition, 
+    any (x rows,y columns) cell displacement modulo (m,n)
+    :code:`(i,j,u,k)` -> :code:`((i+x)%m,(i+y)%n,u,k)`
+    defines an automorphism.
+    See ``chimera_graph()`` for additional information.
+
+
+    Examples
+    ========
+    >>> G = dnx.chimera_torus(3, 3, 4)  # a 3x3 tile chimera graph (connectivity 6)
+    >>> len(G)
+    72
+    >>> list([n for n in G.nodes if len(G.nodes[n].neighbors()) != 6))  # doctest: +SKIP
+    []
+
+    """
+    # Graph properties are by and large inherited from chimera_graph
+    G = chimera_graph(m=m, n=n, t=t, create_using=create_using, node_list=None, edge_list=None, data=data, coordinates=coordinates)
+    # With modification of the boundary condition
+    
+    if m>2:
+        additional_edges = [((0,j,0,k),(m-1,j,0,k))
+                            for j in range(n)
+                            for k in range(t)]
+    else:
+        additional_edges = []
+    
+    if n>2:
+        additional_edges += [((i,0,1,k),(i,n-1,1,k))
+                             for i in range(m)
+                             for k in range(t)]
+
+    if len(additional_edges)>0:
+        G.add_edges_from(additional_edges)
+
+    _add_compatible_edges(G, edge_list)
+    _add_compatible_nodes(G, node_list)
+    return G

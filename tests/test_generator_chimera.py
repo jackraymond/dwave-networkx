@@ -16,11 +16,13 @@ import unittest
 
 import networkx as nx
 import dwave_networkx as dnx
+import numpy as np
 
 alpha_map = dict(enumerate('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'))
 
 
 class TestChimeraGraph(unittest.TestCase):
+         
     def test_single_tile(self):
 
         # fully specified
@@ -161,7 +163,7 @@ class TestChimeraGraph(unittest.TestCase):
         cmask = list(coords.iter_linear_to_chimera(lmask))
 
         self.assertEqual(lmask, list(coords.iter_chimera_to_linear(cmask)))
-
+      
         Gm = dnx.chimera_graph(4, node_list=lmask)
         Hm = dnx.chimera_graph(4, node_list=cmask, coordinates=True)
 
@@ -173,7 +175,7 @@ class TestChimeraGraph(unittest.TestCase):
 
         self.assertEqual(EG, sorted(map(sorted, Gm.edges())))
         self.assertEqual(EH, sorted(map(sorted, Hm.edges())))
-
+        
         Gn = dnx.chimera_graph(4, edge_list=EG)
         Hn = dnx.chimera_graph(4, edge_list=EH, coordinates=True)
 
@@ -282,3 +284,55 @@ class TestChimeraGraph(unittest.TestCase):
                     covered.update(map(f, source))
                 self.assertEqual(covered, set(target))
 
+    def test_node_list(self):
+        #Raises a warning for out of range, and adds in range.
+        with self.assertWarns(UserWarning):
+            G = dnx.chimera_graph(m=1, n=1, t=4, node_list = [0,8])
+            self.assertEqual(len(G.nodes), 1)
+            
+    def test_edge_list(self):
+        #Raises a warning for out of range, and adds in range.
+        with self.assertWarns(UserWarning):
+            G = dnx.chimera_graph(m=1, n=1, t=4, edge_list = [(0,7),(0,1)])
+            self.assertEqual(len(G.edges), 1)
+       
+    def test_torus(self):
+        for m in range(1,4):
+            for n in range(1,4):
+                for t in [1,4]:
+                    conn_vert = min(2,m-1) + t
+                    conn_horiz = min(2,n-1) + t
+                    num_var = m*n*t*2
+                    num_edges = ((num_var//2)*(conn_vert + conn_horiz))//2
+                    g = dnx.chimera_torus(m=m,n=n,t=t,coordinates=True)
+
+                    # Check bulk properties:
+                    self.assertEqual(g.number_of_nodes(),num_var) # Number nodes
+                    self.assertEqual(g.number_of_edges(),num_edges) # Number nodes
+                    
+                    # Check translational invariance:
+                    if m > 1:
+                        drow = 1+np.random.randint(m-1)
+                    else:
+                        drow = 0
+                    if n > 1:
+                        dcol = 1+np.random.randint(n-1)
+                    else:
+                        dcol = 0
+                    relabel = lambda tup: ((tup[0]+drow)%m,(tup[1]+dcol)%n,tup[2],tup[3])
+                    g_translated = nx.relabel_nodes(g,relabel,copy=True)
+                    #Check 1:1 correspondence of edges
+                    g.remove_edges_from(g_translated.edges())
+                    self.assertEqual(g.number_of_edges(),0)
+                    #Check 1:1 correspondence of nodes
+                    g.remove_nodes_from(g_translated.nodes())
+                    self.assertEqual(g.number_of_nodes(),0)
+        #Test correct handling of nodes and edges:
+        with self.assertWarns(UserWarning):
+            #2 valid, 1 invalid
+            G = dnx.chimera_torus(m=m, n=n, t=4, node_list = [0, num_var, num_var-1])
+            self.assertEqual(len(G.nodes), 2)
+        with self.assertWarns(UserWarning):
+            #2 invalid, 1 valid
+            G = dnx.chimera_torus(m=m, n=n, t=t, edge_list = [(0, 4),(0, t-1),(t, num_var)])
+            self.assertEqual(len(G.edges), 1)
