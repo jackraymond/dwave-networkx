@@ -16,6 +16,7 @@ import unittest
 
 import networkx as nx
 import dwave_networkx as dnx
+import numpy as np
 
 class TestZephyrGraph(unittest.TestCase):
     def test_single_tile(self):
@@ -188,3 +189,36 @@ class TestZephyrGraph(unittest.TestCase):
                     covered.update(map(f, source))
                 self.assertEqual(covered, set(target))
 
+    def test_torus(self):
+        #To do, handle m=2 special case properly
+        for m in [2,3,4]:
+            for t in [1,4]:
+                g = dnx.zephyr_torus(m=m, t=t)
+                print(m,t)
+                print('Degree Histogram',nx.degree_histogram(g))
+                # Test bulk properties:
+                
+                num_nodes = (8*t)*m*m
+                self.assertEqual(g.number_of_nodes(), num_nodes)
+                if m==1:
+                    conn = 1 + t*4;
+                    self.assertEqual(g.number_of_edges(),(num_nodes*conn)//2)
+                elif m==2:
+                    conn = 3 + t*4 #At t=1, m=2 (n=32), num_edges = 104 -> conn = 6.5 [something to consider! Need special handling of externals?]
+                    #self.assertEqual(g.number_of_edges(),(num_nodes*conn)//2)
+                else:
+                    conn = 4 + t*4;
+                    self.assertEqual(g.number_of_edges(),(num_nodes*conn)//2)
+
+                    # Check translational invariance (identical edges, identical nodes):
+                    # (u,w,k,j,z) -> (u, [w + u (2*dx) + (1-u)*(2*dy)]%(m-1)), k, j, [z + (1-u) dx + u dy]%(m-1))
+                    dx = 1 + np.random.randint(m-2)
+                    dy = np.random.randint(m-1)
+                    relabel = lambda tup: (tup[0],(tup[1] + tup[0]*(2*dx) + (1-tup[0])*(2*dy))%(2*m),tup[2],tup[3],(tup[4] + tup[0]*dy + (1-tup[0])*dx)%m)
+                    g_translated = nx.relabel_nodes(g,relabel,copy=True)
+                    print(g.number_of_edges(),g_translated.number_of_edges(),(dx,dy),m)
+                    g.remove_edges_from(g_translated.edges())
+                    self.assertEqual(g.number_of_edges(),0) #At t=1, m=2 (n=32), 8 left over edges. 8 edges collapsed to the same place?
+                    g.remove_nodes_from(g_translated.nodes())
+                    self.assertEqual(g.number_of_nodes(),0)
+                    

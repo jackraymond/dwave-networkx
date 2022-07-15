@@ -58,12 +58,11 @@ def _add_compatible_edges(G, edge_list):
 
 
 def _add_compatible_nodes(G, node_list):
+    # We remove the edges associated to the nodes, not the nodes themselves!
     if node_list is not None:
         nodes = set(node_list)
-        #print(list(node_list))
-        #print(nodes)
-        #print(G.nodes())
-        G.remove_nodes_from(set(G) - nodes)
+        remove_nodes = set(G) - nodes
+        G.remove_nodes_from(remove_nodes)
         # An error could be raised here if node_list
         # is incompatible with the graph.
         if len(nodes) != G.number_of_nodes():
@@ -71,6 +70,8 @@ def _add_compatible_nodes(G, node_list):
                    "Expected " + str(len(nodes))
                    + " Yielded " + str(G.number_of_nodes()))
             warnings.warn(msg, UserWarning, stacklevel=3)
+            
+        G.add_nodes_from(nodes)  # for singleton nodes
         
 def chimera_graph(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=False):
     """Creates a Chimera lattice of size (m, n, t).
@@ -732,7 +733,7 @@ def chimera_sublattice_mappings(source, target, offset_list=None):
     for offset in offset_list:
         yield _chimera_sublattice_mapping(source_to_chimera, chimera_to_target, offset)
 
-def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=False):
+def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=True):
     """Creates a defect-free Chimera lattice of size (m, n, t) subject to periodic boundary conditions
 
 
@@ -798,17 +799,24 @@ def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_lis
     """
     # Graph properties are by and large inherited from chimera_graph
     G = chimera_graph(m=m, n=n, t=t, create_using=create_using, node_list=None, edge_list=None, data=data, coordinates=coordinates)
-    # With modification of the boundary condition
+    if n == None:
+        n = G.graph['columns']         
+    if t == None:
+        t = G.graph['tile']
     
+
+    # With modification of the boundary condition
     if m>2:
-        additional_edges = [((0,j,0,k),(m-1,j,0,k))
+        # wrapped around row external-coupler edges:
+        additional_edges = [((m-1,j,0,k),(0,j,0,k))
                             for j in range(n)
                             for k in range(t)]
     else:
         additional_edges = []
     
     if n>2:
-        additional_edges += [((i,0,1,k),(i,n-1,1,k))
+        # wrapped around columns external-coupler edges:
+        additional_edges += [((i,n-1,1,k),(i,0,1,k))
                              for i in range(m)
                              for k in range(t)]
 
@@ -817,4 +825,5 @@ def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_lis
 
     _add_compatible_edges(G, edge_list)
     _add_compatible_nodes(G, node_list)
+    
     return G

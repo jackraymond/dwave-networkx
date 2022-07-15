@@ -28,9 +28,44 @@ from .chimera import _chimera_coordinates_cache
 __all__ = ['pegasus_graph',
            'pegasus_coordinates',
            'pegasus_sublattice_mappings',
+           'pegasus_torus',
            ]
 
 
+def _add_compatible_edges(G, edge_list):
+    if edge_list is not None:
+        # These operations seem like they may allow for optimization,
+        # but in typical use case, optimization is not a priority.
+       
+        if type(G) is nx.classes.graph.Graph:
+            #Undirected (special care of tuples):
+            edges = {tuple(sorted(edge)) for edge in edge_list}
+            edges_available = {tuple(sorted(edge)) for edge in G.edges()}
+        else:
+            # A directed graph? This case is fishy
+            edges = {tuple(edge) for edge in edge_list}
+            edges_available = G.edges()
+            
+        G.remove_edges_from(edges_available - edges)
+        if len(edges) != G.number_of_edges():
+            msg = ("The edge_list is incompatible with the edges of the graph."
+                   "Expected " + str(len(edges))
+                   + " edges, but yielded " + str(G.number_of_edges()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
+
+
+def _add_compatible_nodes(G, node_list):
+    if node_list is not None:
+        nodes = set(node_list)
+        G.remove_nodes_from(set(G) - nodes)
+        # An error could be raised here if node_list
+        # is incompatible with the graph.
+        if len(nodes) != G.number_of_nodes():
+            msg = ("The node_list is incompatible with the nodes of the graph."
+                   "Expected " + str(len(nodes))
+                   + " Yielded " + str(G.number_of_nodes()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
+        
 def pegasus_graph(m, create_using=None, node_list=None, edge_list=None, data=True,
                   offset_lists=None, offsets_index=None, coordinates=False, fabric_only=True,
                   nice_coordinates=False):
@@ -216,49 +251,43 @@ def pegasus_graph(m, create_using=None, node_list=None, edge_list=None, data=Tru
 
     max_size = m * (m - 1) * 24  # max number of nodes G can have
 
-    if edge_list is None:
-        if nice_coordinates:
-            fabric_start = 4,8
-            fabric_end = 8, 4
-        elif fabric_only:
-            fabric_start = min(s for s in offset_lists[1]), min(s for s in offset_lists[0])
-            fabric_end = 12 - max(s for s in offset_lists[1]), 12 - max(s for s in offset_lists[0])
-        else:
-            fabric_end = fabric_start = 0, 0
-
-        G.add_edges_from((label(u, w, k, z), label(u, w, k, z + 1))
-                         for u in (0, 1)
-                         for w in range(m)
-                         for k in range(fabric_start[u] if w == 0 else 0, 12 - (fabric_end[u] if w == m1 else 0))
-                         for z in range(m1 - 1))
-
-        G.add_edges_from((label(u, w, k, z), label(u, w, k + 1, z))
-                         for u in (0, 1)
-                         for w in range(m)
-                         for k in range(fabric_start[u] if w == 0 else 0, 12 - (fabric_end[u] if w == m1 else 0), 2)
-                         for z in range(m1))
-
-        off0, off1 = offset_lists
-        def qfilter(u, w, k, z):
-            if w == 0: return k >= fabric_start[u]
-            if w == m1: return k < 12-fabric_end[u]
-            return True
-        def efilter(e): return qfilter(*e[0]) and qfilter(*e[1])
-
-        internal_couplers = (((0, w, k, z), (1, z + (kk < off0[k]), kk, w - (k < off1[kk])))
+    if nice_coordinates:
+        fabric_start = 4, 8
+        fabric_end = 8, 4
+    elif fabric_only:
+        fabric_start = min(s for s in offset_lists[1]), min(s for s in offset_lists[0])
+        fabric_end = 12 - max(s for s in offset_lists[1]), 12 - max(s for s in offset_lists[0])
+    else:
+        fabric_end = fabric_start = 0, 0
+    
+    G.add_edges_from((label(u, w, k, z), label(u, w, k, z + 1))
+                     for u in (0, 1)
+                     for w in range(m)
+                     for k in range(fabric_start[u] if w == 0 else 0, 12 - (fabric_end[u] if w == m1 else 0))
+                     for z in range(m1 - 1))
+    
+    G.add_edges_from((label(u, w, k, z), label(u, w, k + 1, z))
+                     for u in (0, 1)
+                     for w in range(m)
+                     for k in range(fabric_start[u] if w == 0 else 0, 12 - (fabric_end[u] if w == m1 else 0), 2)
+                     for z in range(m1))
+    
+    off0, off1 = offset_lists
+    def qfilter(u, w, k, z):
+        if w == 0: return k >= fabric_start[u]
+        if w == m1: return k < 12-fabric_end[u]
+        return True
+    def efilter(e): return qfilter(*e[0]) and qfilter(*e[1])
+    
+    internal_couplers = (((0, w, k, z), (1, z + (kk < off0[k]), kk, w - (k < off1[kk])))
                          for w in range(m)
                          for kk in range(12)
                          for k in range(0 if w else off1[kk], 12 if w < m1 else off1[kk])
                          for z in range(m1))
-        G.add_edges_from((label(*e[0]), label(*e[1])) for e in internal_couplers if efilter(e))
+    G.add_edges_from((label(*e[0]), label(*e[1])) for e in internal_couplers if efilter(e))
 
-    else:
-        G.add_edges_from(edge_list)
-
-    if node_list is not None:
-        nodes = set(node_list)
-        G.remove_nodes_from(set(G) - nodes)
-        G.add_nodes_from(nodes)  # for singleton nodes
+    _add_compatible_edges(G,edge_list)
+    _add_compatible_nodes(G,node_list)
 
     if data:
         v = 0
@@ -814,30 +843,52 @@ class pegasus_coordinates(object):
             ),
         )
 
-    def graph_to_nice(self, g):
-        """Return a copy of the graph p relabeled to have nice coordinates"""
+    def graph_to_nice(self, g, lossy_mapping=False):
+        """Return a copy of the graph g relabeled to have nice coordinates.
+        According to pegasus_graph(), for size parameter m, nice_coordinates
+        :math:`(t, y, x, u, k)` are limited to 0 <= x,y < m. If 
+        :code:`lossy_mapping=False, an expand range of values 
+        :math:`-1 <= x,y < m+1` is permitted to accomodate reversible 
+        non-lossy transformations of alternative coordinate systems.
+        If :code:`lossy_mapping=True` any nodes and associated edges
+        outside the standard bounds are deleted from the graph created, and 
+        trigger a user warning.
+        """
         labels = g.graph.get('labels')
         if labels == 'int':
-            nodes = self.iter_linear_to_nice(g)
-            edges = self.iter_linear_to_nice_pairs(g.edges)
+            if lossy_mapping:
+                nodes = self.iter_linear_to_nice(g)
+                edges = self.iter_linear_to_nice_pairs(g.edges)
+            else:
+                mapping = {q : self.linear_to_nice(q) for q in g.nodes()}
+                return nx.relabel_nodes(G=g, mapping=mapping, copy=True)
+                
         elif labels == 'coordinate':
-            nodes = self.iter_pegasus_to_nice(g)
-            edges = self.iter_pegasus_to_nice_pairs(g.edges)
+            # A more flexible, reversible notion of nice_coordinates
+            if lossy_mapping:
+                nodes = self.iter_pegasus_to_nice(g)
+                edges = self.iter_pegasus_to_nice_pairs(g.edges)
+            else:
+                mapping = {q : self.pegasus_to_nice(q) for q in g.nodes()}
+                return nx.relabel_nodes(G=g, mapping=mapping, copy=True)
         elif labels == 'nice':
             return g.copy()
         else:
             raise ValueError(
                 f"Node labeling {labels} not recognized.  Input must be generated by dwave_networkx.pegasus_graph."
             )
-
-        return pegasus_graph(
-            g.graph['rows'],
-            node_list=nodes,
-            edge_list=edges,
-            data=g.graph['data'],
-            nice_coordinates=True,
-            offsets_index = 0,
-        )
+        # Because the nice_graph only allows for a subset of the variables
+        # by definition, we wish to use the extended notion of nice_coordinates
+        # that accomodates inversion etc. 
+        #G = pegasus_graph(
+            #g.graph['rows'],
+            #node_list=nodes,
+            #edge_list=edges,
+            #data=g.graph['data'],
+            #nice_coordinates=True,
+            #offsets_index = 0,
+            #)
+        #return G 
 
     def int(self, q):
         """Deprecated alias of `pegasus_to_linear`."""
@@ -1150,3 +1201,86 @@ def pegasus_sublattice_mappings(source, target, offset_list=None):
     for offset in offset_list:
         yield make_mapping(source_to_inner, nice_to_target, offset)
 
+
+def pegasus_torus(m, node_list=None, edge_list=None, data=True,
+                  offset_lists=None, offsets_index=None):
+    """
+    Creates a Pegasus graph modified to allow for periodic boundary conditions and translational invariance.
+
+    Parameters
+    ----------
+    m : int
+        Size parameter for the Pegasus lattice.
+    node_list : iterable, optional (default None)
+        Iterable of nodes in the graph. If None, calculated from `m`.
+        Note that this list is used to remove nodes, so any nodes specified
+        not in ``range(24 * m * (m-1))`` are not added.
+    edge_list : iterable, optional (default None)
+        Iterable of edges in the graph. If None, edges are generated as
+        described below. The nodes in each edge must be integer-labeled in
+        ``range(24 * m * (m-1))``.
+    data : bool, optional (default True)
+        If True, each node has a pegasus_index attribute. The attribute
+        is a 4-tuple Pegasus index as defined below. If the `coordinates` parameter
+        is True, a linear_index, which is an integer, is used.
+    offset_lists : pair of lists, optional (default None)
+        Directly controls the offsets. Each list in the pair must have length 12
+        and contain even ints.  If `offset_lists` is not None, the `offsets_index`
+        parameter must be None.
+    offsets_index : int, optional (default None)
+        A number between 0 and 7, inclusive, that selects a preconfigured
+        set of topological parameters. If both the `offsets_index` and
+        `offset_lists` parameters are None, the `offsets_index` parameters is set
+        to zero. At least one of these two parameters must be None.
+
+    Returns
+    -------
+    G : NetworkX Graph
+        A Pegasus lattice for size parameter `m`.
+
+
+    Examples
+    ========
+    >>> 
+    >>> import dwave_networkx as dnx 
+    >>> import matplotlib.pyplot as plt   # doctest: +SKIP
+    >>> G = dnx.pegasus_torus(2)
+    >>> dnx.draw_pegasus(G)   # doctest: +SKIP
+    >>> plt.show()
+
+
+    """
+    # It is useful to inherit properties, attributes and methods of G:
+    G = pegasus_graph(m=m, node_list=None, edge_list=None, data=data,
+                      coordinates=True,
+                      offset_lists=offset_lists, offsets_index=offsets_index)
+    if m<2:
+        raise ValueError("m>=2 to define a non-empty lattice")
+    # Create the graph minor by contraction of boundary variables
+    # (u,m-1,k,z) to (u,0,k,z) and match boundary coupling to the
+    # bulk with addition of supplementary external couplers 
+    relabel = lambda u, w, k, z: (u, w%(m-1), k, z)
+
+    # Contract internal couplers spanning the boundary:
+    G.add_edges_from([(relabel(*edge[0]),relabel(*edge[1]))
+                      for edge in G.edges() if edge[0][1]==m-1 or edge[1][1]==m-1])
+    if m>3:
+        # Add missing external couplers  (u,w,k,-1) and (u,w,k,0). 
+        G.add_edges_from([((u,w,k,m-2),(u,w,k,0))
+                          for u in range(2)
+                          for w in range(m-1)
+                          for k in range(12)])
+    else:
+        # 2-cell wide lattices do not allow for boundary spanning
+        # edges.
+        pass
+    # Delete variables contracted at the boundary:
+    G.remove_nodes_from([(u, (m-1), k, z)
+                         for u in range(2) for k in range(12) for z in range(m-1)])
+    
+    _add_compatible_edges(G, edge_list)
+    _add_compatible_nodes(G, node_list)
+
+    # The nice coordinate scheme provides a convenient means by which to label qubits
+    # The nice coordinates taken modulo(m) result in a coordinate scheme where 
+    return G

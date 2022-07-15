@@ -28,8 +28,44 @@ from .chimera import _chimera_coordinates_cache
 __all__ = ['zephyr_graph',
            'zephyr_coordinates',
            'zephyr_sublattice_mappings',
+           'zephyr_torus',
            ]
 
+
+def _add_compatible_edges(G, edge_list):
+    if edge_list is not None:
+        # These operations seem like they may allow for optimization,
+        # but in typical use case, optimization is not a priority.
+       
+        if type(G) is nx.classes.graph.Graph:
+            #Undirected (special care of tuples):
+            edges = {tuple(sorted(edge)) for edge in edge_list}
+            edges_available = {tuple(sorted(edge)) for edge in G.edges()}
+        else:
+            # A directed graph? This case is fishy
+            edges = {tuple(edge) for edge in edge_list}
+            edges_available = G.edges()
+            
+        G.remove_edges_from(edges_available - edges)
+        if len(edges) != G.number_of_edges():
+            msg = ("The edge_list is incompatible with the edges of the graph."
+                   "Expected " + str(len(edges))
+                   + " edges, but yielded " + str(G.number_of_edges()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
+
+
+def _add_compatible_nodes(G, node_list):
+    if node_list is not None:
+        nodes = set(node_list)
+        G.remove_nodes_from(set(G) - nodes)
+        # An error could be raised here if node_list
+        # is incompatible with the graph.
+        if len(nodes) != G.number_of_nodes():
+            msg = ("The node_list is incompatible with the nodes of the graph."
+                   "Expected " + str(len(nodes))
+                   + " Yielded " + str(G.number_of_nodes()))
+            warnings.warn(msg, UserWarning, stacklevel=3)
+        
 
 def zephyr_graph(m, t=4, create_using=None, node_list=None, edge_list=None,
                    data=True, coordinates=False):
@@ -163,34 +199,29 @@ def zephyr_graph(m, t=4, create_using=None, node_list=None, edge_list=None,
 
     G.graph.update(construction)
 
-    if edge_list is None:
-        #external edges
-        G.add_edges_from((label(u, w, k, j, z), label(u, w, k, j, z + 1))
-                         for u, w, k, j, z in product(
-                            (0, 1), range(M), range(t), (0, 1), range(m-1)
-                         ))
+    #external edges
+    G.add_edges_from((label(u, w, k, j, z), label(u, w, k, j, z + 1))
+                     for u, w, k, j, z in product(
+                             (0, 1), range(M), range(t), (0, 1), range(m-1)
+                     ))
 
-        #odd edges
-        G.add_edges_from((label(u, w, k, 0, z), label(u, w, k, 1, z-a))
-                         for u, w, k, a in product(
-                            (0, 1), range(M), range(t), (0, 1)
-                         )
-                         for z in range(a, m))
+    #odd edges
+    G.add_edges_from((label(u, w, k, 0, z), label(u, w, k, 1, z-a))
+                     for u, w, k, a in product(
+                             (0, 1), range(M), range(t), (0, 1)
+                     )
+                     for z in range(a, m))
+    
+    #internal edges
+    G.add_edges_from((label(0, 2*w+1+a*(2*i-1), k, j, z), label(1, 2*z+1+b*(2*j-1), h, i, w))
+                     for w, z, h, k, i, j, a, b in product(
+                             range(m), range(m), range(t), range(t), (0, 1), (0, 1), (0, 1), (0, 1)
+                     ))
 
-        #internal edges
-        G.add_edges_from((label(0, 2*w+1+a*(2*i-1), k, j, z), label(1, 2*z+1+b*(2*j-1), h, i, w))
-                         for w, z, h, k, i, j, a, b in product(
-                            range(m), range(m), range(t), range(t), (0, 1), (0, 1), (0, 1), (0, 1)
-                         ))
 
-    else:
-        G.add_edges_from(edge_list)
-
-    if node_list is not None:
-        nodes = set(node_list)
-        G.remove_nodes_from(set(G) - nodes)
-        G.add_nodes_from(nodes)  # for singleton nodes
-
+    _add_compatible_edges(G, edge_list)
+    _add_compatible_nodes(G, node_list)
+        
     if data:
         if coordinates:
             def fill_data():
@@ -379,7 +410,7 @@ def _zephyr_zephyr_sublattice_mapping(source_to_zephyr, zephyr_to_target, offset
     a closure that is stable under iteration therein.
 
     The mappings implemented by this function interpret offsets in the grid of
-    the Chimera(2m+1, 2m+1, 2*t) graphs underlying the source and tartget Zephyr
+    the Chimera(2m+1, 2m+1, 2*t) graphs underlying the source and target Zephyr
     graphs.  The formulas (see implementation) are somewhat complex, because
 
         * a shift by a y-unit induces a reversal of the orthogonal minor offset
@@ -653,3 +684,80 @@ def zephyr_sublattice_mappings(source, target, offset_list=None):
 
     for offset in offset_list:
         yield make_mapping(source_to_inner, zephyr_to_target, offset)
+
+
+def zephyr_torus(m, t=4, node_list=None, edge_list=None):
+    """
+    Creates a Zephyr graph modified to allow for periodic boundary conditions and translational invariance.
+    
+    The graph matches the local connectivity properties of a standard zephyr graph,
+    but with modified periodic boundary condition. Tiles of 8t qubits are arranged
+    on a torus with m by m cells. 
+
+    Parameters
+    ----------
+    m : int
+        Grid parameter for the Zephyr lattice.
+    t : int
+        Tile parameter for the Zephyr lattice.
+    create_using : Graph, optional (default None)
+        If provided, this graph is cleared of nodes and edges and filled
+        with the new graph. Usually used to set the type of the graph.
+    node_list : iterable, optional (default None)
+        Iterable of nodes in the graph. If None, calculated from ``m``.
+        Note that this list is used to remove nodes, so only specified nodes
+        that belong to the base node set (described in the ``coordinates``
+        parameter) are added.
+    edge_list : iterable, optional (default None)
+        Iterable of edges in the graph. If None, edges are generated as
+        described below. The nodes in each edge must be labeled according to the
+        ``coordinates`` parameter.
+    data : bool, optional (default True)
+        If True, adds to each node an attribute with a format that depends on
+        the ``coordinates`` parameter: a 5-tuple ``'zephyr_index'`` if
+        ``coordinates`` is False and an integer ``'linear_index'`` if ``coordinates``
+        is True.
+    coordinates : bool, optional (default False)
+        If True, node labels are 5-tuple Zephyr indices.
+
+    Returns
+    -------
+    G : NetworkX Graph
+        A Zephyr lattice for grid parameter ``m`` and tile parameter ``t``.
+
+    Examples
+    --------
+    >>> G = dnx.zephyr_graph(2)
+    >>> G.nodes(data=True)[(0, 0, 0, 0, 0)]    # doctest: +SKIP
+    {'linear_index': 0}
+
+    """
+    G = zephyr_graph(m=m, t=t, node_list=None, edge_list=None,
+                         data=True, coordinates=True)
+    
+    relabel = lambda u, w, k, j, z: (u, w%(2*m), k, j, z)
+    
+    # Contract internal couplers spanning the boundary:
+    G.add_edges_from([(relabel(*edge[0]),relabel(*edge[1]))
+                      for edge in G.edges() if edge[0][1]==2*m or edge[1][1]==2*m])
+    
+    if m>1:
+        # Add boundary spanning external couplers:
+        G.add_edges_from([((u,w,k,1,m-1),(u,w,k,0,0))
+                          for u in range(2)
+                          for w in range(2*m)
+                          for k in range(t)])
+        G.add_edges_from([((u,w,k,j,m-1),(u,w,k,j,0))
+                          for u in range(2)
+                          for w in range(2*m)
+                          for k in range(t)
+                          for j in range(2)])
+        
+    # Delete variables contracted at the boundary:
+    G.remove_nodes_from([(u, 2*m, k, j, z)
+                         for u in range(2) for k in range(t) for j in range(2) for z in range(m)])
+    
+    _add_compatible_edges(G, edge_list)
+    _add_compatible_nodes(G, node_list)
+    
+    return G
