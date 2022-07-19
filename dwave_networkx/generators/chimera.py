@@ -825,5 +825,7 @@ def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_lis
 
     _add_compatible_edges(G, edge_list)
     _add_compatible_nodes(G, node_list)
+
+    G.graph['boundary_condition'] = 'torus'
     
     return G

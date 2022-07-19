@@ -760,4 +760,6 @@ def zephyr_torus(m, t=4, node_list=None, edge_list=None):
     _add_compatible_edges(G, edge_list)
     _add_compatible_nodes(G, node_list)
     
+    G.graph['boundary_condition'] = 'torus'
+    
     return G

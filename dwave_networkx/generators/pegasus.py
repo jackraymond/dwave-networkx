@@ -1281,6 +1281,6 @@ def pegasus_torus(m, node_list=None, edge_list=None, data=True,
     _add_compatible_edges(G, edge_list)
     _add_compatible_nodes(G, node_list)
 
-    # The nice coordinate scheme provides a convenient means by which to label qubits
-    # The nice coordinates taken modulo(m) result in a coordinate scheme where 
+    G.graph['boundary_condition'] = 'torus'
+    
     return G
