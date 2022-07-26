@@ -733,7 +733,7 @@ def chimera_sublattice_mappings(source, target, offset_list=None):
     for offset in offset_list:
         yield _chimera_sublattice_mapping(source_to_chimera, chimera_to_target, offset)
 
-def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True, coordinates=True):
+def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_list=None, data=True):
     """Creates a defect-free Chimera lattice of size (m, n, t) subject to periodic boundary conditions
 
 
@@ -798,7 +798,7 @@ def chimera_torus(m, n=None, t=None, create_using=None, node_list=None, edge_lis
 
     """
     # Graph properties are by and large inherited from chimera_graph
-    G = chimera_graph(m=m, n=n, t=t, create_using=create_using, node_list=None, edge_list=None, data=data, coordinates=coordinates)
+    G = chimera_graph(m=m, n=n, t=t, create_using=create_using, node_list=None, edge_list=None, data=data, coordinates=True)
     if n == None:
         n = G.graph['columns']         
     if t == None:

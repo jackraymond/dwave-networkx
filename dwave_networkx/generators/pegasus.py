@@ -1277,7 +1277,6 @@ def pegasus_torus(m, node_list=None, edge_list=None, data=True,
     # Delete variables contracted at the boundary:
     G.remove_nodes_from([(u, (m-1), k, z)
                          for u in range(2) for k in range(12) for z in range(m-1)])
-    
     _add_compatible_edges(G, edge_list)
     _add_compatible_nodes(G, node_list)
 
