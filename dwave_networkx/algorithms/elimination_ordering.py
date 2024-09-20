@@ -102,8 +102,10 @@ def is_almost_simplicial(G, n):
     return False
 
 
-def minor_min_width(G):
+def minor_min_width(G, weight=None):
     """Computes a lower bound for the treewidth of graph G.
+    The treewidth of a minor on a vertex weighted (or unweighted) graph
+    Under edge contraction, a new weight is the maximum(?proove) of the two vertex weights.
 
     Parameters
     ----------
@@ -126,19 +128,24 @@ def minor_min_width(G):
 
     References
     ----------
-    Based on the algorithm presented in [GD]_
+    Based on the MMW algorithm presented in [GD]_
 
     """
     # we need only deal with the adjacency structure of G. We will also
     # be manipulating it directly so let's go ahead and make a new one
     adj = {v: set(u for u in G[v] if u != v) for v in G}
-
+    if weight is not None:
+        weights = nx.get_node_attributes(G, weight)
     lb = 0  # lower bound on treewidth
     while len(adj) > 1:
 
-        # get the node with the smallest degree
-        v = min(adj, key=lambda v: len(adj[v]))
-
+        if weight is None:
+            # get the node with the smallest degree
+            v = min(adj, key=lambda v: len(adj[v]))
+        else:
+            # get the node with the smallest degree
+            v = min(adj, key=lambda v: sum(weights[vp] for vp in adj[v]) + (weights[v] - 1))
+            
         # find the vertex u such that the degree of u is minimal in the neighborhood of v
         neighbors = adj[v]
 
@@ -151,10 +158,14 @@ def minor_min_width(G):
             Gu = adj[u]
             return sum(w in Gu for w in neighbors)
 
-        u = min(neighbors, key=neighborhood_degree)
+        u = min(neighbors, key=neighborhood_degree)  # could be improved under weights
 
         # update the lower bound
-        new_lb = len(adj[v])
+        if weight is None:
+            new_lb = len(adj[v])
+        else:
+            new_lb = sum(weights[vp] for vp in adj[v]) + (weights[v] - 1)  # Bag weight minus 1
+            
         if new_lb > lb:
             lb = new_lb
 
@@ -165,11 +176,14 @@ def minor_min_width(G):
         for n in adj[u]:
             adj[n].discard(u)
         del adj[u]
-
+        if weight is not None:
+            # weights[v] = max(weights[u], weights[v])  # simpy weights[v] is safer
+            weights[v] = min(weights[u], weights[v])
+            del weights[u]
     return lb
 
 
-def min_fill_heuristic(G):
+def min_fill_heuristic(G, weight=None):
     """Computes an upper bound on the treewidth of graph G based on
     the min-fill heuristic for the elimination ordering.
 
@@ -202,7 +216,8 @@ def min_fill_heuristic(G):
     # we need only deal with the adjacency structure of G. We will also
     # be manipulating it directly so let's go ahead and make a new one
     adj = {v: set(u for u in G[v] if u != v) for v in G}
-
+    if weight is not None:
+        weights = nx.get_node_attributes(G, weight)
     num_nodes = len(adj)
 
     # preallocate the return values
@@ -214,15 +229,18 @@ def min_fill_heuristic(G):
         v = min(adj, key=lambda x: _min_fill_needed_edges(adj, x))
 
         # if the number of neighbours of v is higher than upper_bound, update
-        dv = len(adj[v])
+        if weight is None:
+            dv = len(adj[v])
+        else:
+            dv = sum(weights[u] for u in adj[v]) + (weights[v] - 1)  # Bag weight minus 1
+            
         if dv > upper_bound:
             upper_bound = dv
-
+            
         # make v simplicial by making its neighborhood a clique then remove the
         # node
         _elim_adj(adj, v)
         order[i] = v
-
     return upper_bound, order
 
 
@@ -397,8 +415,84 @@ def _elim_adj(adj, n):
     del adj[n]
     return new_edges
 
+def create_chordal_graph(G, order):
+    """ Create a chordal graph according to an order,
+    NB, the chordal graph is not unique, hence even a chordal graph G may 
+    acquire new edges as a function of order."""
+    Gd = G.copy()
+    Gchordal = G.copy()
+    if set(order) != set(G.nodes):
+        raise ValueError('Incomplete order')
+    for v in order:
+        # perfect_ordering -> chordal, proof by contradiction:
+        # Suppose a chord-free cycle where v is the first element (in order).
+        # The two (forward) vertices it connects to are connected by construction.
+        # Hence any cycle longer than 3, without a chord cannot contain
+        # v. 
+        Gchordal.add_edges_from(
+            (vn1, vn2) for vn1 in Gd.neighbors(v)
+            for vn2 in Gd.neighbors(v) if vn1 < vn2)
+        Gd.remove_node(v)
+    # assert nx.is_chordal(Gchordal)  # Move to tests, cannot fail (is broken?)
+    return Gchordal
 
-def elimination_order_width(G, order):
+#def create_maximum_cliques(Gchordal, order=None):
+    #if not nx.is_chordal(Gchordal):  # Not a bottleneck, may as well check.
+    #    raise ValueError('Argument should be a chordal graph')
+    #print(order)
+    #max_cliques = set()
+    #if order is None:
+    #    order = Gchordal.nodes()
+    #backset = set()
+    #for v in order:
+    #    neighbors = set(Gchordal.neighbors(v)).intersection(backset)
+    #    print(v)
+    #    print(neighbors,len(neighbors),'neighbors')
+    #    backset.add(v)
+    #    sn = tuple(sorted(neighbors))
+    #    if sn in max_cliques:
+    #        max_cliques.remove(sn)
+    #        print('remove')
+    #    neighbors.add(v)
+    #    max_cliques.add(tuple(sorted(neighbors)))
+    #max_cliques = nx.chordal_graph_cliques(Gchordal)  # Use this!
+    #print(max_cliques, max_cliques2)
+    #return max_cliques
+
+def create_junction_graph(max_cliques, order=None):
+    # Use chordal_graph_cliques() from chordal graph. Create chordal graph with create_cordal_graph.
+    # Weighted overlap of all cliques, then (maximum?) spanning tree...
+    G = nx.graph()
+    G.add_nodes_from(range(len(max_cliques)))
+    nx.set_node_attributes(G, values=max_cliques, name='clique')
+    
+    #for v in order:
+    #    clique_list = [clique_i
+    #                   for clique_i in range(len(max_cliques))
+    #                   if v in max_cliques[clique_i]]
+    #    G.add_edges_from((clique_list[0],clique_i) for clique_i in clique_list[1:] )
+    
+    # Temporary, part of debugging:
+    if not nx.is_tree(G):
+        raise ValueError('Connection of cliques prescribed by ordering does not form a tree')
+    nx.draw_networkx(G)
+    plt.show()
+    return G
+
+def elimination_order_to_tree_embedding(vertices, edge_elimination_order):
+    """ vertices can be interpretted as tensors """
+    root_labels = {v: idx for idx,v in enumerate(vertices)}
+    g = nx.Graph()
+    g.add_nodes_from(root_labels)
+    for e in edge_elimination_order:
+        te = [root_labels[v] for v in e]
+        if te[0] != te[1]:
+            root_labels.update({v: e for v in e})
+            g.add_edges_from({(root_labels[v], e) for v in e})
+    assert(g.number_of_edges() == 2*len(vertices)-1)  # binary tree
+    return g
+
+def elimination_order_width(G, order, weight=None):
     """Calculates the width of the tree decomposition induced by a
     variable elimination order.
 
@@ -410,6 +504,9 @@ def elimination_order_width(G, order):
     order : list
         The elimination order. Must be a list of all of the variables
         in G.
+
+    weight : string
+        If specified, the nodes are weighted according to the corresponding node attribute.
 
     Returns
     -------
@@ -435,13 +532,16 @@ def elimination_order_width(G, order):
     # be manipulating it directly so let's go ahead and make a new one
     adj = {v: set(u for u in G[v] if u != v) for v in G}
 
-    treewidth = 0
+    treewidth = 0 # Could be a tuple, if, e.g. multiple edge types. (e.g. D and chi, p)
 
     for v in order:
 
         # get the degree of the eliminated variable
         try:
-            dv = len(adj[v])
+            if weight is None:
+                dv = len(adj[v])
+            else:
+                dv = sum(G.nodes[vn][weight] for vn in adj[v]) + (G.nodes[v][weight] - 1)  # Bag weight minus 1
         except KeyError:
             raise ValueError('{} is in order but not in G'.format(v))
 
@@ -459,7 +559,7 @@ def elimination_order_width(G, order):
     return treewidth
 
 
-def treewidth_branch_and_bound(G, elimination_order=None, treewidth_upperbound=None):
+def treewidth_branch_and_bound(G, elimination_order=None, treewidth_upperbound=None, weight=None):
     """Computes the treewidth of graph G and a corresponding perfect elimination ordering.
 
     Algorithm based on [GD]_.
@@ -504,22 +604,26 @@ def treewidth_branch_and_bound(G, elimination_order=None, treewidth_upperbound=N
     if not any(G[v] for v in G):
         return 0, list(G)
 
+    if weight is None:
+        weights = None
+    else:
+        weights = nx.get_node_attributes(G, weight)
+    
     # variable names are chosen to match the paper
 
     # our order will be stored in vector x, named to be consistent with
     # the paper
     x = []  # the partial order
-
-    f = minor_min_width(G)  # our current lower bound guess, f(s) in the paper
+    f = minor_min_width(G, weight=weight)  # our current lower bound guess, f(s) in the paper
     g = 0  # g(s) in the paper
 
     # we need the best current update we can find.
-    ub, order = min_fill_heuristic(G)
-
+    ub, order = min_fill_heuristic(G, weight=weight)
+    
     # if the user has provided an upperbound or an elimination order, check those against
     # our current best guess
     if elimination_order is not None:
-        upperbound = elimination_order_width(G, elimination_order)
+        upperbound = elimination_order_width(G, elimination_order, weight=weight)
         if upperbound <= ub:
             ub, order = upperbound, elimination_order
 
@@ -537,14 +641,14 @@ def treewidth_branch_and_bound(G, elimination_order=None, treewidth_upperbound=N
         # be manipulating it directly so let's go ahead and make a new one
         adj = {v: set(u for u in G[v] if u != v) for v in G}
 
-        best_found = _branch_and_bound(adj, x, g, f, best_found)
+        best_found = _branch_and_bound(adj, x, g, f, best_found, weights=weights)
     elif f > ub and treewidth_upperbound is None:
         raise RuntimeError("logic error")
-
+    
     return best_found
 
 
-def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None):
+def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None, weights=None):
     """ Recursive branch and bound for computing treewidth of a subgraph.
     adj: adjacency list
     x: partial elimination order
@@ -553,6 +657,7 @@ def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None)
     best_found = ub,order: best upper bound on the treewidth found so far, and its elimination order
     skipable: vertices that can be skipped according to Lemma 5.3
     theorem6p2: terms that have been explored/can be pruned according to Theorem 6.2
+    weight: A dictionary of vertex weights
     """
 
     # theorem6p2 checks for branches that can be pruned using Theorem 6.2
@@ -605,9 +710,10 @@ def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None)
     # We don't need to consider the neighbors of the last vertex eliminated
     sorted_adj = sorted((n for n in adj if n not in skipable), key=lambda x: _min_fill_needed_edges(adj, x))
     for n in sorted_adj:
-
-        g_s = max(g, len(adj[n]))
-
+        if weights is None:
+            g_s = max(g, len(adj[n]))
+        else:
+            g_s = max(g, sum(weights[np] for np in adj[n]) + (weights[n]-1))
         # according to Lemma 5.3, we can skip all of the neighbors of the last
         # variable eliniated when choosing the next variable
         # this does not get altered so we don't need a copy
@@ -635,7 +741,7 @@ def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None)
         # ok, let's update our values
         f_s = max(g_s, minor_min_width(adj_s))
 
-        g_s, f_s, as_list = _graph_reduction(adj_s, x_s, g_s, f_s)
+        g_s, f_s, as_list = _graph_reduction(adj_s, x_s, g_s, f_s, weights=weights)
 
         # pruning (disabled):
         # if prune6p3(x, as_list, n):
@@ -643,7 +749,8 @@ def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None)
 
         if f_s < ub:
             best_found = _branch_and_bound(adj_s, x_s, g_s, f_s, best_found,
-                                           next_skipable, theorem6p2=theorem6p2)
+                                           next_skipable, theorem6p2=theorem6p2,
+                                           weights=weights)
             # if theorem6p1, theorem6p3 are enabled, this should be called as:
             # best_found = _branch_and_bound(adj_s, x_s, g_s, f_s, best_found,
             #                                next_skipable, theorem6p1=theorem6p1,
@@ -667,7 +774,7 @@ def _branch_and_bound(adj, x, g, f, best_found, skipable=set(), theorem6p2=None)
     return best_found
 
 
-def _graph_reduction(adj, x, g, f):
+def _graph_reduction(adj, x, g, f, weights=None):
     """we can go ahead and remove any simplicial or almost-simplicial vertices from adj.
     """
     as_list = set()
@@ -677,7 +784,10 @@ def _graph_reduction(adj, x, g, f):
         for n in as_nodes:
 
             # update g and f
-            dv = len(adj[n])
+            if weights is None:
+                dv = len(adj[n])
+            else:
+                dv = sum(weights[np] for np in adj[n]) + (weights[n] - 1)
             if dv > g:
                 g = dv
             if g > f:
