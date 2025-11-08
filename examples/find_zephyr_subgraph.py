@@ -20,6 +20,9 @@ import itertools
 import tqdm
 
 from dwave_networkx import zephyr_sublattice_mappings, zephyr_graph, zephyr_coordinates
+import networkx as nx
+import minorminer
+
 
 def _decoordinate_best_embedding(
     best_embedding, coordinated, m_target, t_target, m_source, t_source
@@ -354,7 +357,7 @@ def zephyr_in_zephyr_embedding(
 
 
 def main_example(
-    solvers=("Advantage2_system1.6", "Advantage2_system3.1"),
+    solvers=("Advantage2_system1.7",),  # , "Advantage2_system3.1"),
     m_source=4,
     t_source=2,
     submit_to_verify=False,
@@ -413,6 +416,21 @@ def main_example(
             Ginduced.number_of_edges() / ideal_num_edges_s,
         )
         draw_parallel_embeddings(G=G, embeddings=[emb])
+        plt.title(
+            f"Nodes {len(emb)}/{ideal_num_nodes_s}, Edges {Ginduced.number_of_edges()}/{ideal_num_edges_s}: Full:{len(qpu.nodelist) / ideal_num_nodes:.3g}, {len(qpu.edgelist) / ideal_num_edges:.3g}"
+        )
+        plt.savefig(f"{solver}_m{m_source}t{t_source}.png", bbox_inches="tight")
+        embM = minorminer.find_embedding(S=source, T=G, initial_chains=emb, verbose=1)
+        print(embM)
+        if embM:
+            used_nodes = [v for c in emb.values() for v in c]
+            used_edges = [
+                e for e in G.edges() if e[0] in used_nodes and e[1] in used_nodes
+            ]
+            Gminor = nx.from_edgelist(used_edges)
+            plt.title(
+                f"MM{sum(len(e) for e in embM.values())}, Nodes {len(emb)}/{ideal_num_nodes_s}, Edges {Ginduced.number_of_edges()}/{ideal_num_edges_s}: Full:{len(qpu.nodelist) / ideal_num_nodes:.3g}, {len(qpu.edgelist) / ideal_num_edges:.3g}"
+            )
         plt.savefig(f"{solver}_m{m_source}t{t_source}.png", bbox_inches="tight")
 
         # E.g. submit a ferromagnetic problem using this embedding
