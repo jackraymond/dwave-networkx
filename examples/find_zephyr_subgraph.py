@@ -16,12 +16,15 @@
 Embedders for zephyr on zephyr (work in progress, unoptimized)
 """
 import itertools
+import os
 
 import tqdm
 
 from dwave_networkx import zephyr_sublattice_mappings, zephyr_graph, zephyr_coordinates
+from dwave.embedding import is_valid_embedding
 import networkx as nx
 import minorminer
+import pickle
 
 
 def _decoordinate_best_embedding(
@@ -92,6 +95,87 @@ def zephyr_in_zephyr_utility_function(
                     nodes
                 ).number_of_edges()
     return utility
+
+
+def embedding_candidate_P1(n, u, w, ks, sublattice_embedding):
+    """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
+    e = sublattice_embedding[n]
+    if n[0] != u or n[1] != w:
+        return e
+    else:
+        return e[:2] + (ks[n[2]],) + e[3:]  # k mapped.
+
+
+def embedding_candidate_P2(n, u, w, j, z, ks, sublattice_embedding):
+    """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
+    e = sublattice_embedding[n]
+    if n[0] != u or n[1] != w or n[3] != j or n[4] != z:
+        return e
+    else:
+        return e[:2] + (ks[n[2]],) + e[3:]
+
+
+def embed_tprime_in_t(
+    m,
+    t,
+    t_s,
+    sublattice_embedding,
+    target,
+    source=None,
+    verbose=True,
+    best_num_edges0=-1,
+    num_coords=2,
+):
+    if source is None:
+        source = zephyr_graph(m, t_s, coordinates=True)
+    max_num_edges = source.number_of_edges()
+    subgraph_nodes = set(sublattice_embedding.values())
+    best_num_edges = target.subgraph(subgraph_nodes).number_of_edges()
+    if best_num_edges == max_num_edges:
+        print("Subgraph isomorphism problem solved by displacement")
+        return sublattice_embedding, best_num_edges
+    if num_coords == 2:
+        all_ks = list(itertools.combinations(range(t), t_s))[
+            1:
+        ]  # First permutation is accounted for by initial condition.
+
+        coords_iterator = itertools.product(range(2), range(2 * m + 1))
+        embedding_candidate_P = embedding_candidate_P1
+    else:
+        all_ks = list(itertools.combinations(range(t), t_s))
+        coords_iterator = itertools.product(
+            range(2), range(2 * m + 1), range(2), range(m)
+        )
+        embedding_candidate_P = embedding_candidate_P2
+
+    for coords in coords_iterator:
+        bestks = None  # Best rails
+        for ks in all_ks:
+            subgraph_nodes = {
+                embedding_candidate_P(n, *coords, ks, sublattice_embedding)
+                for n in source
+            }  # TIDY UP: More efficient O(m) to update than recalculate.
+            num_edges = target.subgraph(subgraph_nodes).number_of_edges()
+
+            if num_edges > best_num_edges:
+                # Record best so far
+                bestks = ks
+                best_num_edges = num_edges
+                if verbose and best_num_edges > best_num_edges0:
+                    best_num_edges0 = best_num_edges
+                    print(best_num_edges, *coords, ks)
+                if num_edges == max_num_edges:
+                    break
+
+        if bestks is not None:
+            # O(m^2) complexity can be reduced to O(m) if necessary:
+            sublattice_embedding = {
+                n: embedding_candidate_P(n, *coords, bestks, sublattice_embedding)
+                for n in source
+            }
+        if num_edges == max_num_edges:
+            break
+    return sublattice_embedding, best_num_edges
 
 
 def zephyr_in_zephyr_embedding(
@@ -202,149 +286,55 @@ def zephyr_in_zephyr_embedding(
             # For each sublattice mapping, a heuristic is used to maximize the number of edges
             # i.e. the problem zephyr_in_zephyr_utility_function is solved greedily with graph
             # insight
-            best_num_edges = -1
             sublattice_embedding = {n: def_sublattice_embedding(n) for n in source}
-            target_nodes = {def_sublattice_embedding(n) for n in source}
-            num_edges = target.subgraph(target_nodes).number_of_edges()
-            if num_edges == source.number_of_edges():
-                print("Subgraph isomorphism problem solved by displacement")
-                best_embedding = {n: (def_sublattice_embedding(n),) for n in source}
-                return _decoordinate_best_embedding(
-                    best_embedding, coordinated, m_target, t_target, m_source, t_source
-                )
-            elif num_edges > best_num_edges:
-                best_num_edges = num_edges
-
-            def embedding_candidate_P(n, u, w, ks, sublattice_embedding):
-                """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
-                e = sublattice_embedding[n]
-                if n[0] != u or n[1] != w:
-                    return e
-                else:
-                    return e[:2] + (ks[n[2]],) + e[3:]  # k mapped.
 
             # Greedily select permutations, deterministic and heuristics generalizations are possible:
             # In principle we should iterate more than once to guarantee arrival at a local minima
-            for u in range(2):
-                for w in range(2 * m_source + 1):
-                    bestks = None  # Best rails
-                    for ks in all_ks:
-                        target_nodes = {
-                            embedding_candidate_P(n, u, w, ks, sublattice_embedding)
-                            for n in source
-                        }
-                        # The change in the number of edges can be an O(m) operation.
-                        # But here it is O(m^2).
-                        # This can be adjusted later for speed
-                        num_edges = target.subgraph(target_nodes).number_of_edges()
-                        if (
-                            num_edges == source.number_of_edges()
-                        ):  # Special case of zephyr subgraph
-                            # Return optimal embedding
-                            print(
-                                "Subgraph isomorphism solved by {t_target choose t_source} search"
-                            )
-                            best_embedding = {
-                                n: (
-                                    embedding_candidate_P(
-                                        n, u, w, ks, sublattice_embedding
-                                    ),
-                                )
-                                for n in source
-                            }
-                            return _decoordinate_best_embedding(
-                                best_embedding,
-                                coordinated,
-                                m_target,
-                                t_target,
-                                m_source,
-                                t_source,
-                            )
 
-                        elif num_edges > best_num_edges:
-                            # Record best so far
-                            bestks = ks
-                            best_num_edges = num_edges
-                            if best_num_edges > best_num_edges0:
-                                print(best_num_edges, u, w, ks)
-                    if bestks is not None:
-                        # O(m^2) complexity can be reduced to O(m) if necessary:
-                        sublattice_embedding = {
-                            n: embedding_candidate_P(
-                                n, u, w, bestks, sublattice_embedding
-                            )
-                            for n in source
-                        }
-
+            sublattice_embedding, best_num_edges = embed_tprime_in_t(
+                m_source,
+                t_target,
+                t_source,
+                sublattice_embedding,
+                target=target,
+                source=source,
+                verbose=True,
+                best_num_edges0=best_num_edges0,
+            )
+            if best_num_edges == source.number_of_edges():
+                return _decoordinate_best_embedding(
+                    sublattice_embedding,
+                    coordinated,
+                    m_target,
+                    t_target,
+                    m_source,
+                    t_source,
+                )
             # If a fully yielded graph is not found by the above heuristic, it cannot be found on this sublattice
             # we can still seek a higher edge yield result by greedy or heuristic search:
             if allow_unmapped_edges:
-                # Try a bit harder, do a secondary greedy edge search
-                def embedding_candidate_P(n, u, w, j, z, ks, sublattice_embedding):
-                    """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
-                    e = sublattice_embedding[n]
-                    if n[0] != u or n[1] != w or n[3] != j or n[4] != z:
-                        return e
-                    else:
-                        return e[:2] + (ks[n[2]],) + e[3:]
+                sublattice_embedding, best_num_edges = embed_tprime_in_t(
+                    m_source,
+                    t_target,
+                    t_source,
+                    sublattice_embedding,
+                    target=target,
+                    source=source,
+                    verbose=True,
+                    best_num_edges0=best_num_edges0,
+                    num_coords=4,
+                )
+                if best_num_edges == source.number_of_edges():
+                    return _decoordinate_best_embedding(
+                        sublattice_embedding,
+                        coordinated,
+                        m_target,
+                        t_target,
+                        m_source,
+                        t_source,
+                    )
 
-                for u, w, j, z in itertools.product(
-                    range(2), range(2 * m_source + 1), range(2), range(m_source)
-                ):
-                    bestks = None  # Best rails
-                    for ks in all_ks:
-                        # O(m_source^2) complexity can be reduced to O(1) if necessary:
-                        target_nodes = {
-                            embedding_candidate_P(
-                                n, u, w, j, z, ks, sublattice_embedding
-                            )
-                            for n in source
-                        }
-
-                        # The change in the number of edges can be an O(1) operation.
-                        # But here it is O(m^2).
-                        # This can be adjusted later for speed
-                        num_edges = target.subgraph(target_nodes).number_of_edges()
-                        if num_edges == source.number_of_edges():
-                            # We have already searched all embeddings that allow full yield
-                            # over 'external' and 'odd' couplers.
-                            warnings.warn(
-                                "Subgraph isomorphism problem should not be solved here"
-                                "except special case (failure to iterature first state)"
-                                "to a local minima"
-                            )
-                            best_embedding = {
-                                n: (
-                                    embedding_candidate_P(
-                                        n, u, w, j, z, ks, sublattice_embedding
-                                    ),
-                                )
-                                for n in source
-                            }
-                            return _decoordinate_best_embedding(
-                                best_embedding,
-                                coordinated,
-                                m_target,
-                                t_target,
-                                m_source,
-                                t_source,
-                            )
-                        elif num_edges > best_num_edges:
-                            # Record best so far
-                            bestks = ks
-                            best_num_edges = num_edges
-                            if best_num_edges > best_num_edges0:
-                                print(best_num_edges, u, w, j, z, ks)
-                    if bestks is not None:
-                        # O(m_source^2) complexity can be reduced to O(1) if necessary:
-                        sublattice_embedding = {
-                            n: embedding_candidate_P(
-                                n, u, w, j, z, bestks, sublattice_embedding
-                            )
-                            for n in source
-                        }
-
-            if best_num_edges0 <= best_num_edges:
+            if best_num_edges0 < best_num_edges:
                 best_embedding = {
                     n: (sublattice_embedding[n],)
                     for n in source
@@ -357,7 +347,9 @@ def zephyr_in_zephyr_embedding(
 
 
 def main_example(
-    solvers=("Advantage2_system1.7",),  # , "Advantage2_system3.1"),
+    solvers=(
+        "Advantage2_system1.7_m484",
+    ),  # ("Advantage2_system2_x_internal",), # ("Advantage2_system1.7",), #("Advantage2_system2.1",), # , "Advantage2_system3.1"), ,
     m_source=4,
     t_source=2,
     submit_to_verify=False,
@@ -365,12 +357,57 @@ def main_example(
 
     import matplotlib.pyplot as plt
 
+    from dwave.system.testing import MockDWaveSampler
     from dwave.system import DWaveSampler, FixedEmbeddingComposite
     from dwave_networkx import draw_parallel_embeddings
     from dwave.embedding import verify_embedding  # For debugging
 
     for solver in solvers:
-        qpu = DWaveSampler(solver=solver)  # Could specify zephyr more generally
+        fn = f"{solver}.pkl"
+        if not os.path.isfile(fn):
+            if solver == "Advantage2_system2_x_internal":
+                qpu = DWaveSampler(
+                    solver=solver, profile="benchmarking"
+                )  # Could specify zephyr more generally
+                with open(fn, "wb") as f:
+                    pickle.dump(qpu.properties, f)
+            else:
+                if solver == "Advantage2_system1.7_m484":
+                    badqubits = {484}
+                    qpu = DWaveSampler(
+                        solver="Advantage2_system1.7"
+                    )  # Could specify zephyr more generally
+                    nodeset = set(qpu.properties["qubits"]).difference(badqubits)
+                    properties = qpu.properties
+                    properties["qubits"] = sorted(nodeset)
+                    properties["couplers"] = [
+                        c
+                        for c in properties["couplers"]
+                        if c[0] not in badqubits and c[1] not in badqubits
+                    ]
+                    with open(fn, "wb") as f:
+                        pickle.dump(properties, f)
+
+                    qpu = MockDWaveSampler(
+                        properties=properties,
+                        nodelist=properties["qubits"],
+                        edgelist=properties["couplers"],
+                    )
+                else:
+                    qpu = DWaveSampler(
+                        solver=solver
+                    )  # Could specify zephyr more generally
+                    with open(fn, "wb") as f:
+                        pickle.dump(qpu.properties, f)
+        else:
+            with open(fn, "rb") as f:
+                properties = pickle.load(f)
+
+            qpu = MockDWaveSampler(
+                properties=properties,
+                nodelist=properties["qubits"],
+                edgelist=properties["couplers"],
+            )
         print(solver, qpu.properties["topology"])
         m_target = qpu.properties["topology"]["shape"][0]
         t_target = qpu.properties["topology"]["shape"][1]
@@ -385,16 +422,22 @@ def main_example(
             len(qpu.nodelist) / ideal_num_nodes,
             len(qpu.edgelist) / ideal_num_edges,
         )
-        m_source, t_source = 10, 2  # This can be found in both processor graphs
-
-        emb = zephyr_in_zephyr_embedding(
-            m_target=m_target,
-            m_source=m_source,
-            t_target=t_target,
-            t_source=t_source,
-            node_list_target=node_list_target,
-            edge_list_target=edge_list_target,
-        )
+        m_source, t_source = 12, 2  # This can be found in both processor graphs
+        fn = f"emb{solver}_m{m_source}_t{t_source}.pkl"
+        if not os.path.isfile(fn):
+            emb = zephyr_in_zephyr_embedding(
+                m_target=m_target,
+                m_source=m_source,
+                t_target=t_target,
+                t_source=t_source,
+                node_list_target=node_list_target,
+                edge_list_target=edge_list_target,
+            )
+            with open(fn, "wb") as f:
+                pickle.dump(emb, f)
+        else:
+            with open(fn, "rb") as f:
+                emb = pickle.load(f)
 
         plt.figure(solver)
         G = qpu.to_networkx_graph()
@@ -419,17 +462,31 @@ def main_example(
         plt.title(
             f"Nodes {len(emb)}/{ideal_num_nodes_s}, Edges {Ginduced.number_of_edges()}/{ideal_num_edges_s}: Full:{len(qpu.nodelist) / ideal_num_nodes:.3g}, {len(qpu.edgelist) / ideal_num_edges:.3g}"
         )
+
         plt.savefig(f"{solver}_m{m_source}t{t_source}.png", bbox_inches="tight")
-        embM = minorminer.find_embedding(S=source, T=G, initial_chains=emb, verbose=1)
-        print(embM)
-        if embM:
+        fn = f"embM{solver}_m{m_source}_t{t_source}.pkl"
+        if not os.path.isfile(fn):
+            embM, success = minorminer.find_embedding(
+                S=source, T=G, initial_chains=emb, verbose=1, return_overlap=True
+            )
+            ## Look at the shortfall!
+            print(embM)
+            with open(fn, "wb") as f:
+                pickle.dump(embM, f)
+        else:
+
+            with open(fn, "rb") as f:
+                embM = pickle.load(f)
+            success = is_valid_embedding(embM, source, G)
+        if True:
+
             used_nodes = [v for c in emb.values() for v in c]
             used_edges = [
                 e for e in G.edges() if e[0] in used_nodes and e[1] in used_nodes
             ]
             Gminor = nx.from_edgelist(used_edges)
             plt.title(
-                f"MM{sum(len(e) for e in embM.values())}, Nodes {len(emb)}/{ideal_num_nodes_s}, Edges {Ginduced.number_of_edges()}/{ideal_num_edges_s}: Full:{len(qpu.nodelist) / ideal_num_nodes:.3g}, {len(qpu.edgelist) / ideal_num_edges:.3g}"
+                f"MM{sum(len(e) for e in embM.values())}{success}, Nodes {len(emb)}/{ideal_num_nodes_s}, Edges {Ginduced.number_of_edges()}/{ideal_num_edges_s}: Full:{len(qpu.nodelist) / ideal_num_nodes:.3g}, {len(qpu.edgelist) / ideal_num_edges:.3g}"
             )
         plt.savefig(f"{solver}_m{m_source}t{t_source}.png", bbox_inches="tight")
 
