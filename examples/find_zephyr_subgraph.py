@@ -18,13 +18,14 @@ Embedders for zephyr on zephyr (work in progress, unoptimized)
 import itertools
 import os
 
+import networkx as nx
+import pickle
 import tqdm
+
 
 from dwave_networkx import zephyr_sublattice_mappings, zephyr_graph, zephyr_coordinates
 from dwave.embedding import is_valid_embedding
-import networkx as nx
 import minorminer
-import pickle
 
 
 def _decoordinate_best_embedding(
@@ -39,80 +40,35 @@ def _decoordinate_best_embedding(
         return {c2ls(k): (c2lt(v[0]),) for k, v in best_embedding.items()}
 
 
-def zephyr_in_zephyr_utility_function(
-    m, t_target=4, t_source=3, node_list=None, edge_list=None
-):
-    """Define an optimization problem associated to best shores.
+def embedding_candidate_P1(n, u, w, ks, sublattice_embedding, t=4):
+    """Permute rail (u,w), k=(0,1,..,t_source-1) -> ks"""
 
-    At low edge and node defect rates, a maximum edge-yield zephyr[m,t'] graph within a zephyr[m,t]
-    can be found by consideration of only a restricted set of mappings. This can be formalized
-    as an optimization problem on categorical variables.
-
-    The zephyr[m,t] target graph can be decomposed into a quotient graph Gq indexed by (w,u,j,z) with (up to)
-    t nodes at each site.  The zephyr[m,t'] graph can similarly be decomposed with t' nodes at each
-    site. For every (u,w,j,z) selection of a subset t' of nodes from t determines a candidate embedding
-    associated to a specific edge yield. The space of subset mappings can be searched by standard methods
-    for a maximum edge yield embedding.
-
-    If a fully-yielded subgraph can be found the above mapping is sufficient whenever m>1, i.e.
-    if the subgraph isomorphism problem is solvable, the above mapping is sufficient.
-    In the case of incomplete edge yield, the mapping is not guaranteed to maximize edge yield,
-    although in practice it will do so with high probability if the edge (and node) defect rate is small.
-
-    Each node n (coordinates u,w,j,z) in the quotient is associated an integer indexed categorical variable
-    defining one of the {t choose t'} possible mappings of nodes.
-    For any edge in the quotient graph (n1,n2), and assignment of categorical variables v_n1, v_n2
-    there is an associated edge yield Eyield_{n1,n2}(v_n1, v_n2). The objective is to find an
-    assignment such that the total number of edges is maximized:
-
-    Num_edges(v) = sum_{n1 < n2} Eyield_{n1,n2}(v_n1, v_n2)
-
-    Eyield is returned as a sparse dictionary by the function. A best assignment to v in
-    |{t choose t'}|^N can be found by heuristic and/or exact optimization methods.
-    """
-    # For each value of u,w,j,z find the optimal subset of k
-    if t_target <= t_source:
-        return "Unsuitable format for optimization problem"
-
-    kassignment = {
-        idx: v
-        for idx, v in enumerate(itertools.combinations(range(t_target), t_source))
-    }
-
-    quotient_graph = zephyr_graph(m, t=1, coordinates=True)  # Defect free source graph
-    utility = {
-        e: [[0] * len(kassignment)] * len(kassignment) for e in quotient_graph.edges()
-    }
-    target_graph = zephyr_graph(
-        m, t=t_target, coordinates=True, node_list=node_list, edge_list=edge_list
-    )
-    for n1, n2 in quotient_graph.edges():
-        for idx1, ks1 in kassignment.items():
-            nodes1 = {n1[:2] + (k,) + n1[3:] for k in ks1}
-            for idx2, ks2 in kassignment.items():
-                nodes = nodes1 | {n2[:2] + (k,) + n2[3:] for k in ks2}
-                utility[n1, n2][idx1][idx2] = target_graph.subgraph(
-                    nodes
-                ).number_of_edges()
-    return utility
-
-
-def embedding_candidate_P1(n, u, w, ks, sublattice_embedding):
-    """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
-    e = sublattice_embedding[n]
+    c = sublattice_embedding[n]  # Current chain (1:1)
     if n[0] != u or n[1] != w:
-        return e
+        return c
+    elif type(ks[n[2]]) is tuple:
+        return c[:1] + ks[n[2]] + c[3:]  # (w, k), boundary can borrow from the interior
     else:
-        return e[:2] + (ks[n[2]],) + e[3:]  # k mapped.
+        return c[:2] + (ks[n[2]],) + c[3:]  # k mapped on same rail.
 
 
 def embedding_candidate_P2(n, u, w, j, z, ks, sublattice_embedding):
-    """Permute rail (u,w), k=(0,1,..,t_source) -> ks"""
-    e = sublattice_embedding[n]
+    """Permute quotient node (u,w,j,z), k=(0,1,..,t_source) -> ks"""
+    c = sublattice_embedding[n]
     if n[0] != u or n[1] != w or n[3] != j or n[4] != z:
-        return e
+        return c  # Unchanged
+    elif type(ks[n[2]]) is tuple:
+        return c[:1] + ks[n[2]] + c[3:]  # Shift on same (u,w,k,j)
     else:
-        return e[:2] + (ks[n[2]],) + e[3:]
+        return c[:2] + (ks[n[2]],) + c[3:]  # Shift on same (u,w,k,j)
+
+
+def borrow_in_w(nodes, t, u, w, j=0, z=0):
+    # Borrow rails, or qubits if not accounted for
+    if w == 0:
+        return {(u, w + 1, k, j, z) for k in range(t)}.difference(nodes)
+    else:
+        return {(u, w - 1, k, j, z) for k in range(t)}.difference(nodes)
 
 
 def embed_tprime_in_t(
@@ -125,7 +81,11 @@ def embed_tprime_in_t(
     verbose=True,
     best_num_edges0=-1,
     num_coords=2,
+    offset_at_boundary=True,
+    use_adjacent_rails=False,
 ):
+    """Originally this started as didactic code, now its getting quite ugly"""
+
     if source is None:
         source = zephyr_graph(m, t_s, coordinates=True)
     max_num_edges = source.number_of_edges()
@@ -138,24 +98,42 @@ def embed_tprime_in_t(
         all_ks = list(itertools.combinations(range(t), t_s))[
             1:
         ]  # First permutation is accounted for by initial condition.
-
-        coords_iterator = itertools.product(range(2), range(2 * m + 1))
+        coords_iterator = itertools.product(
+            range(2), list(range(1, 2 * m)) + [0, 2 * m]
+        )  # Do the boundary last:
         embedding_candidate_P = embedding_candidate_P1
     else:
         all_ks = list(itertools.combinations(range(t), t_s))
         coords_iterator = itertools.product(
-            range(2), range(2 * m + 1), range(2), range(m)
+            range(2), list(range(1, 2 * m)) + [0, 2 * m], range(2), range(m)
         )
         embedding_candidate_P = embedding_candidate_P2
 
     for coords in coords_iterator:
         bestks = None  # Best rails
-        for ks in all_ks:
+        if use_adjacent_rails and (coords[1] == 0 or coords[1] == 2 * m):
+            available_to_borrow = borrow_in_w(subgraph_nodes, t, *coords)
+            all_ks0 = list(
+                itertools.combinations(
+                    list(range(t)) + [tuple(n[1:3]) for n in available_to_borrow], t_s
+                )
+            )
+            # Doesn't work - when we borrow cross-rail can no longer judge by
+            # edge count of the induced subgraph only.
+        else:
+            all_ks0 = all_ks
+        for ks in all_ks0:
             subgraph_nodes = {
                 embedding_candidate_P(n, *coords, ks, sublattice_embedding)
                 for n in source
             }  # TIDY UP: More efficient O(m) to update than recalculate.
-            num_edges = target.subgraph(subgraph_nodes).number_of_edges()
+            if use_adjacent_rails:
+                num_edges = target.subgraph(subgraph_nodes).number_of_edges()
+                raise ValueError(
+                    f"{num_edges} invalid in general: time to tidy up and address speed"
+                )
+            else:
+                num_edges = target.subgraph(subgraph_nodes).number_of_edges()
 
             if num_edges > best_num_edges:
                 # Record best so far
@@ -348,8 +326,8 @@ def zephyr_in_zephyr_embedding(
 
 def main_example(
     solvers=(
-        "Advantage2_system1.7_m484",
-    ),  # ("Advantage2_system2_x_internal",), # ("Advantage2_system1.7",), #("Advantage2_system2.1",), # , "Advantage2_system3.1"), ,
+        "Advantage2_system3.1",
+    ),  # ("Advantage2_system1.7",), #("Advantage2_system2.1",), # "Advantage2_system1.7_m484",
     m_source=4,
     t_source=2,
     submit_to_verify=False,
@@ -422,7 +400,7 @@ def main_example(
             len(qpu.nodelist) / ideal_num_nodes,
             len(qpu.edgelist) / ideal_num_edges,
         )
-        m_source, t_source = 12, 2  # This can be found in both processor graphs
+        m_source, t_source = 3, 2  # This can be found in both processor graphs
         fn = f"emb{solver}_m{m_source}_t{t_source}.pkl"
         if not os.path.isfile(fn):
             emb = zephyr_in_zephyr_embedding(
